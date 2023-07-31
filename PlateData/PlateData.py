@@ -235,7 +235,7 @@ class PlateAssay:
         elif isinstance(row_annotations, (list, tuple, np.ndarray)):
             rowkeys = []
             for i in np.where(use_row)[0]:
-                rowkeys.append(sep.join([self._col_annotations[ann] for ann in row_annotations]))
+                rowkeys.append(sep.join([self._row_annotations[ann] for ann in row_annotations]))
             plt.yticks(np.arange(12)[use_row], rowkeys)
         else:
             plt.yticks([])
@@ -294,7 +294,7 @@ def read_Mn_assay_excel(filename, sheets = ("Plate 1", "Plate 2", "Plate 3"), di
             t_off = np.max(data_holder[-1]["Time"]) + n*t_offset
 
         # Conver the time measurement into minutes
-        X["Time"] = [time.hour*60 + time.minute + time.second / 60 + t_off for time in X["Time"]]
+        X["Time"] = [time.hour*60 + time.minute + time.second / 60 + t_off for time in X["Time"] if type(time)!=str]
         data_holder.append(X)
 
     # concatenate all data into a single data frame
