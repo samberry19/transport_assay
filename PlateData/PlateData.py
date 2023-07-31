@@ -6,6 +6,8 @@ import seaborn as sns
 
 import datetime
 
+from statsmodels.nonparametric.kernel_regression import KernelReg
+
 nums = [str(i) for i in range(1,13)]
 letts = list('ABCDEFGH')
 
@@ -24,6 +26,11 @@ class PlateAssay:
         self.keys = list(df_keys)
         self._times = []
         self._raw_data = dfs
+        
+        self.row_names = np.unique([i[0] for i in dfs[0].columns[2:]])
+        self.col_names = np.unique([i[1:] for i in dfs[0].columns[2:]])
+        
+        self.n_rows = len(self.row_names); self.n_cols = len(self.col_names)
 
         if isinstance(dfs, (list, tuple)):
 
@@ -32,11 +39,11 @@ class PlateAssay:
 
             for n, df in enumerate(dfs):
 
-                DataArr = np.zeros((len(df), 8, 12))
+                DataArr = np.zeros((len(df), self.n_rows, self.n_cols))
 
                 for nt in range(len(df)):
-                    for nl,lett in enumerate(list('ABCDEFGH')):
-                        for nn, num in enumerate(range(1,13)):
+                    for nl,lett in enumerate(self.row_names):
+                        for nn, num in enumerate(self.col_names):
 
                             try:
                                 DataArr[(nt, nl, nn)] = float(df.iloc[nt][lett + str(num)])
@@ -52,11 +59,11 @@ class PlateAssay:
 
         else:
             key=df_keys; df = dfs; self.keys = [key]
-            DataArr = np.zeros((len(df), 8, 12))
+            DataArr = np.zeros((len(df), self.n_rows, self.n_cols))
 
             for nt in range(len(df)):
-                for nl,lett in enumerate(list('ABCDEFGH')):
-                    for nn, num in enumerate(range(1,13)):
+                for nl,lett in enumerate(self.row_names):
+                    for nn, num in enumerate(self.col_names):
 
                         try:
                             DataArr[(nt, nl, nn)] = float(df.iloc[nt][lett + str(num)])
@@ -70,10 +77,10 @@ class PlateAssay:
         self._col_annotations = col_annotations
 
         for key, construct in row_annotations.items():
-            self.annotations[key] = np.array([construct]*12).T
+            self.annotations[key] = np.array([construct]*self.n_cols).T
 
         for key, construct in col_annotations.items():
-            self.annotations[key] = np.array([construct]*8)
+            self.annotations[key] = np.array([construct]*self.n_rows)
 
         self.annotation_types = list(self.annotations.keys())
 
@@ -239,7 +246,6 @@ class PlateAssay:
             plt.yticks(np.arange(12)[use_row], rowkeys)
         else:
             plt.yticks([])
-
 def selector(df, dic):
 
     '''A little tool for selecting from pandas dataframes by passing a dictionary, e.g.
@@ -348,3 +354,78 @@ def load_neo_data(filename, sheet_name, initial_guess=20, n_guesses=30):
 
         # return and drop nans from the end
         return neo_df.dropna(how = 'any')
+
+def OD_RFU_Kernel_Regression(baseline_ODs, baseline_RFUs, kernel_bw=0.1, plot_expand=1.1):
+    
+    '''
+    Performs a nonparametric kernel regression on the ODs against the RFU values and returns
+    a function to normalize all sample RFUs against RFUs for a similar OD value in the EV/EV sample.
+    
+    I am doing it this way because ODs and RFUs in the control samples (no FP) do not obey a linear or
+    any other kind of simple functional form. This way I do not assume any functional form of the input;
+    I simple flit a flexible gaussian kernel function to the points.
+    
+    Inputs:
+        baseline ODs: the control ODs (e.g. the EV/EV sample), as a 1D array
+        baseline RFUs: the corresponding RFUs from this sample
+        
+        kernel_bw (optional): the bandwidth of the kernel to use. this controls the smoothness of the function.
+            statsmodels has default procedures to estimate this but I like to manually set a significantly higher
+            one because I feel that their procedures overfit based on systematic noise (in particular, they assume
+            that the noise is random, while the noise is in fact highly correlated since it is coming from time course
+            data). Defaults to 0.1. Feel free to play with this.
+            
+    Output:
+        kr_predict(): a function that takes in any array of OD values and spits back out the kernel regression
+            prediction of what the RFUs would be for the baseline (EV/EV?) sample. Built to handle >1D arrays
+            as well as nans (nans in the input will just remain nans in the output)
+        a plot of the raw normalization data (gray scatter) and the kernel regression fit (red line)
+    
+    WARNING:
+        this does NOT work if any of your sample ODs are outside of the range of the EV/EV ODs. If you wish to use
+        this function in case, you have to truncate your data such that the sample ODs are all less than the EV/EV
+        ODs. As you can probably see from the plot, the regressor will drift back toward ZERO above the range of the
+        fitting data. It CANNOT extrapolate to larger values.
+    '''
+
+    # define and fit the kernel gression
+    kr = KernelReg(exog=baseline_ODs,
+                   endog=baseline_RFUs,
+                   var_type="c",
+                   bw=[kernel_bw])
+
+    pred_y, marginal_effects = kr.fit()
+    
+    # make the data to plot
+    plot_x = np.arange(0, np.max(baseline_ODs)*plot_expand, 0.01)
+    kr_prediction_means = kr.fit(plot_x)[0]
+    
+    # plot the fit
+    plt.figure(figsize=(5,5))
+    plt.plot(plot_x, kr_prediction_means, c='red')
+    plt.scatter(baseline_ODs, baseline_RFUs, c='gray', alpha=0.1)
+    plt.xlabel("Baseline OD"); plt.ylabel("Baseline RFU")
+    
+    # defines a function to return
+    def kr_predict(ods):
+        
+        '''
+        This is the output function of the regression protocol and is what the function returns. Use this to
+        normalize your raw data.
+        
+        Input:
+            ods: a numpy array of OD values of any shape
+        Output:
+            rfu_pred: predicted RFU values, as an array of the same shape. nans will be carried over
+        '''
+        
+        flattened_ods = ods.flatten()
+        
+        rfu_pred = np.zeros(len(flattened_ods))
+        nonan = np.isnan(flattened_ods)==False
+        rfu_pred[nonan] = kr.fit(flattened_ods[nonan])[0]
+        rfu_pred[nonan==False] = np.nan
+        
+        return rfu_pred.reshape(ods.shape)
+    
+    return kr_predict
